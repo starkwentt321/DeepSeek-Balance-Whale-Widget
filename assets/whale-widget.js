@@ -356,6 +356,8 @@ var BALANCE_URL = '/dsh-whale/balance.json'
 var SIZE_URL = '/dsh-whale/size.json'
 var IMG_URL = '/dsh-whale/image.png?v=2'
 var GIF_URL = '/dsh-whale/rua.gif'
+// 会话工作中角色位显示的动图（走泡泡图库路由；可用 localStorage['dshw-work-gif'] 换成任意图片地址）
+var WORK_GIF_URL = '/dsh-whale/bubble-img.png?id=bimg_workmaid'
 var BUBBLE_URL = '/dsh-whale/bubble.json'
 
 var css = [
@@ -382,6 +384,25 @@ var css = [
   // 新增影响的只有滚轮，由 onWhaleWheel 转交给指针下方真正可滚动的容器。
   '.dshwv-root.dshwv-cursor-grab .dshwv-img{pointer-events:auto;cursor:grab}',
   '.dshwv-root.dshwv-cursor-grabbing .dshwv-img{pointer-events:auto;cursor:grabbing}',
+  // —— 工作状态动图（当前打开的会话运行中时，角色位换成 GIF）——
+  // GIF 已是透明抠图版：无卡片底/描边，像角色原皮一样浮在角落；pointer-events 关闭，
+  // 交互（命中/拖拽/光标）仍走原 img 的几何判定。贴左镜像由根节点 scaleX(-1) 自动继承。
+  '.dshwv-workimg{display:none;width:52%;height:52%}',
+  '.dshwv-root.dshwv-working .dshwv-workimg{display:block}',
+  // 工作思考气泡：白色圆角框 + 小尾巴指向角色头顶，三点呼吸动画；贴左镜像时内容反转
+  '.dshwv-tip{position:absolute;right:34%;bottom:60%;max-width:70%;pointer-events:none;z-index:1;opacity:0;transform:translateY(8px) scale(.92);transform-origin:80% 100%;transition:opacity .18s ease,transform .22s cubic-bezier(.34,1.4,.64,1)}',
+  '.dshwv-root.dshwv-working .dshwv-tip{opacity:1;transform:none}',
+  '.dshwv-tip-in{position:relative;display:flex;align-items:baseline;background:rgba(255,255,255,.95);border:1px solid rgba(32,49,112,.3);border-radius:10px;padding:.35em .7em;box-shadow:0 3px 10px rgba(32,49,112,.15);color:#203170;font-weight:600;white-space:nowrap;font-size:calc(var(--dshw-base) * .042);line-height:1.2}',
+  '.dshwv-tip-in::after{content:"";position:absolute;right:14%;bottom:-5px;width:9px;height:9px;background:inherit;border-right:1px solid rgba(32,49,112,.3);border-bottom:1px solid rgba(32,49,112,.3);transform:rotate(45deg)}',
+  '.dshwv-root.dshwv-left .dshwv-tip-in{transform:scaleX(-1)}',
+  '.dshwv-tip-dots{display:inline-flex;align-items:baseline;margin-left:.15em}',
+  '.dshwv-tip-dots i{display:inline-block;width:.3em;height:.3em;margin-left:.16em;border-radius:50%;background:#536ba9;animation:dshwvTipDot 1.2s infinite}',
+  '.dshwv-tip-dots i:nth-child(2){animation-delay:.2s}',
+  '.dshwv-tip-dots i:nth-child(3){animation-delay:.4s}',
+  '@keyframes dshwvTipDot{0%,60%,100%{opacity:.25}30%{opacity:1}}',
+  // 用 opacity 而不是 visibility：opacity:0 的元素仍接收指针事件，
+  // 工作中角色图外圈的命中/拖拽区域不缩水（事件全在 document 层按几何判定）。
+  '.dshwv-root.dshwv-working .dshwv-img:not(.dshwv-workimg){opacity:0}',
   // 拖动期间握点相对挂件固定，让整个盒接过指针以保持 grabbing（类由按下时加、endDrag 摘）
   '.dshwv-root.dshwv-dragging .dshwv-body{pointer-events:auto;cursor:grabbing}',
   '.dshwv-pop{position:absolute;left:0;top:0;width:100%;aspect-ratio:1026/700;pointer-events:none;z-index:1;--dshw-u:calc(var(--dshw-base) / 1026)}',
@@ -1756,6 +1777,17 @@ var rowHide = menuRow()
 rowHide.appendChild(menuLabel('隐藏菜单按钮'))
 rowHide.appendChild(menuHideToggle)
 menuBox.appendChild(rowHide)
+// —— 干饭演出(本地实验,默认关):会话运行中把挂件换成「干饭女仆」动图+思考气泡 ——
+var workPetToggle = document.createElement('input')
+workPetToggle.type = 'checkbox'
+workPetToggle.className = 'dshwv-check'
+workPetToggle.checked = workPetOn
+workPetToggle.title = '会话运行中把挂件角色换成「干饭女仆」吃饭动图并显示思考气泡(本地实验功能,默认关)'
+workPetToggle.addEventListener('change', function () { setWorkPetOn(workPetToggle.checked) })
+var rowWorkPet = menuRow()
+rowWorkPet.appendChild(menuLabel('干饭演出'))
+rowWorkPet.appendChild(workPetToggle)
+menuBox.appendChild(rowWorkPet)
 // —— Codex 本机统计开关（issue #116）：v748 起**从主菜单挪进「Codex 模型的设置子菜单」** ——
 // 主菜单不再有这一项（它对没配 Codex 模型的用户没有意义）。宿主侧同样按"有没有 Codex 模型"兜底：
 // 没配 → 默认关闭、完全不扫 ~/.codex/sessions。这里只保留一个"当前挂载的那个复选框"的引用，
@@ -11899,6 +11931,27 @@ function clampWidgetTop(v, maxT) {
 var body = document.createElement('div')
 body.className = 'dshwv-body'
 body.appendChild(img)
+// 工作动图覆盖层：紧跟角色图之后（盖在其上、泡泡之下），见 css 里 .dshwv-workimg
+var workImg = document.createElement('img')
+workImg.className = 'dshwv-img dshwv-workimg'
+workImg.alt = ''
+workImg.draggable = false
+try { workImg.src = localStorage.getItem('dshw-work-gif') || WORK_GIF_URL } catch (err) { workImg.src = WORK_GIF_URL }
+body.appendChild(workImg)
+// 工作思考气泡：随 dshwv-working 显示（纯视觉，pointer-events 关闭），见 css 里 .dshwv-tip
+var workTip = document.createElement('div')
+workTip.className = 'dshwv-tip'
+var workTipIn = document.createElement('div')
+workTipIn.className = 'dshwv-tip-in'
+var workTipText = document.createElement('span')
+try { workTipText.textContent = localStorage.getItem('dshw-work-text') || '深度思考中' } catch (err) { workTipText.textContent = '深度思考中' }
+workTipIn.appendChild(workTipText)
+var workTipDots = document.createElement('span')
+workTipDots.className = 'dshwv-tip-dots'
+for (var dshwDotI = 0; dshwDotI < 3; dshwDotI++) workTipDots.appendChild(document.createElement('i'))
+workTipIn.appendChild(workTipDots)
+workTip.appendChild(workTipIn)
+body.appendChild(workTip)
 body.appendChild(bubbleBox)
 root.appendChild(body)
 root.appendChild(menuBtn)
@@ -14497,6 +14550,7 @@ var menuBtnHide = false // 主菜单开关:隐藏挂件菜单按钮,改为右键
 // 所以这里保持默认 true 是安全的（不会让没配 Codex 的用户被扫盘），也不会因为一次普通保存
 // 就把老用户的开关写成 false。开关 UI 现只在 Codex 模型的设置子菜单里（见 codexStatsCheckbox）。
 var codexStatsOn = true
+var workPetOn = false // 主菜单开关:会话运行中换成「干饭女仆」动图+思考气泡(本地实验,默认关)
 // —— v734（issue #97 / #88）：设置保存的「防覆盖 + 失败可见」——
 // #97 根因：首次 GET 还没落地就 PUT，会把内存里的默认值整包写进服务端（重启后设置被洗成默认值）。
 // #88 根因：这个 PUT 以前是 fire-and-forget，服务端 500 / {ok:false} 完全没人读。
@@ -14538,7 +14592,7 @@ function configSaveFailNotice(detail) {
     '<br>已自动重试一次。若持续失败，请检查 DSH 数据目录是否可写。')
 }
 function configPayload() {
-  return JSON.stringify({ scale: state.scale, sound: soundOn, vol: soundVol, soundSet: soundSet, usageMode: usageMode, peakMode: peakMode, bubbleOn: bubbleOn, turnCostOn: turnCostOn, turnCostCloseMs: turnCostCloseMs, scrollGapOn: scrollGapOn, scrollGapPx: scrollGapPx, menuBtnHide: menuBtnHide, codexStatsOn: codexStatsOn })
+  return JSON.stringify({ scale: state.scale, sound: soundOn, vol: soundVol, soundSet: soundSet, usageMode: usageMode, peakMode: peakMode, bubbleOn: bubbleOn, turnCostOn: turnCostOn, turnCostCloseMs: turnCostCloseMs, scrollGapOn: scrollGapOn, scrollGapPx: scrollGapPx, menuBtnHide: menuBtnHide, codexStatsOn: codexStatsOn, workPet: workPetOn })
 }
 // 真正的 PUT：读响应 → 失败（网络异常 / HTTP!=200 / {ok:false}）静默重试一次 → 仍失败才提示
 function configPut(payload, retried) {
@@ -14670,6 +14724,13 @@ function setMenuBtnHide(v) {
   if (menuHideToggle) menuHideToggle.checked = menuBtnHide
   saveConfig()
   applyMenuBtnHideUI()
+}
+// 工作中干饭演出开关（默认关）：切换后立即存盘并重算一次工作状态
+function setWorkPetOn(v) {
+  workPetOn = v === true
+  if (workPetToggle) workPetToggle.checked = workPetOn
+  saveConfig()
+  if (typeof dshwApplyWorkState === 'function') dshwApplyWorkState()
 }
 // issue #116：Codex 本机统计开关。关掉后宿主不扫描 ~/.codex/sessions；
 // 打开/关闭都要重取一次模型列表，让 Codex 那行的统计/提示立刻跟着变。
@@ -17068,6 +17129,29 @@ applySoundSet()
 setupHitTest(initRoleUrl)
 loadRoles()
 loadAudio()
+// ===== 会话工作状态 → 角色换成工作动图 =====
+// 信号：DSH 聊天列在会话运行期间渲染 [data-chat-running] 指示器，停止即移除 ——
+// 正好等价于「当前打开的会话在工作中」。全页 MutationObserver + 200ms 尾去抖，
+// 状态真正翻转时才做一次 querySelector，避免长会话里每次 React 渲染都全树查询。
+try { new Image().src = (function () { try { return localStorage.getItem('dshw-work-gif') || WORK_GIF_URL } catch (err) { return WORK_GIF_URL } })() } catch (err) {} // 预载，首次切换不闪空白
+var dshwWorkTimer = null
+function dshwApplyWorkState() {
+  dshwWorkTimer = null
+  try {
+    var running = !!document.querySelector('[data-chat-running]')
+    // 干饭演出开关（默认关）：关着时会话照常运行，但挂件保持鲸鱼不动
+    root.classList.toggle('dshwv-working', running && workPetOn)
+  } catch (err) {}
+}
+function dshwScheduleWorkState() {
+  if (dshwWorkTimer) return
+  dshwWorkTimer = setTimeout(dshwApplyWorkState, 200)
+}
+try {
+  var dshwWorkObserver = new MutationObserver(dshwScheduleWorkState)
+  dshwWorkObserver.observe(document.documentElement, { childList: true, subtree: true, attributes: true, attributeFilter: ['data-chat-running'] })
+} catch (err) {}
+dshwApplyWorkState()
 // 用量设置(任务结束音/预警/预算)加载,并据此初始化主菜单“任务结束”行
 loadUsageSettings(function () {
   try {
@@ -17156,6 +17240,12 @@ fetch(SIZE_URL, { cache: 'no-store' })
     if (d && typeof d.codexStatsOn === 'boolean') {
       codexStatsOn = d.codexStatsOn
       if (codexStatsToggle) codexStatsToggle.checked = codexStatsOn
+    }
+    // 干饭演出开关（老配置没有这个键 → 保持默认「关」）；配置比首次 apply 晚到，重算一次
+    if (d && typeof d.workPet === 'boolean') {
+      workPetOn = d.workPet
+      if (workPetToggle) workPetToggle.checked = workPetOn
+      if (typeof dshwApplyWorkState === 'function') dshwApplyWorkState()
     }
     // 无论服务端带没带这个键都要应用一次：触屏上 ☰ 需要常显（issue #91 缺陷2），
     // 而旧写法只在键存在时才调用，空配置下按钮永远是透明的。
